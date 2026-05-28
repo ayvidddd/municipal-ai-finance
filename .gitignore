@@ -40,3 +40,9 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 .env.local
+
+# local SQLite database (auto-seeded at runtime)
+/data/*.db
+/data/*.db-journal
+/data/*.db-shm
+/data/*.db-wal

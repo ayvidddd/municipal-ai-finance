@@ -1,8 +1,7 @@
 import type { Metadata } from "next";
-import { Inter, Playfair_Display } from "next/font/google";
+import { Inter } from "next/font/google";
 import "./globals.css";
-import { Nav } from "@/components/Nav";
-import { Footer } from "@/components/Footer";
+import { AppShell } from "@/components/app/app-shell";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -10,16 +9,10 @@ const inter = Inter({
   display: "swap",
 });
 
-const playfair = Playfair_Display({
-  variable: "--font-playfair",
-  subsets: ["latin"],
-  display: "swap",
-});
-
 export const metadata: Metadata = {
-  title: "Municipal AI Finance | Intelligent Financial Management for Municipalities",
+  title: "Municipal AI Finance",
   description:
-    "AI powered financial forecasting, anomaly detection, and Development Charges management built for municipal governments.",
+    "AI-native financial operations platform: forecasting, DC/CIL collections, and trade reconciliation.",
 };
 
 export default function RootLayout({
@@ -28,14 +21,23 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="en"
-      className={`${inter.variable} ${playfair.variable} h-full antialiased`}
-    >
-      <body className="min-h-full flex flex-col bg-background text-foreground">
-        <Nav />
-        <main className="flex-1">{children}</main>
-        <Footer />
+    <html lang="en" suppressHydrationWarning className={`${inter.variable}`}>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              try {
+                var t = localStorage.getItem('theme') || 'dark';
+                if (t === 'dark') document.documentElement.classList.add('dark');
+                var d = localStorage.getItem('density') || 'comfortable';
+                document.documentElement.dataset.density = d;
+              } catch(e) {}
+            `,
+          }}
+        />
+      </head>
+      <body className="antialiased">
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );

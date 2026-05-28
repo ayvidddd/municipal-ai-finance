@@ -1,139 +1,130 @@
 # Municipal AI Finance
 
-Marketing and live demo site for two AI powered municipal finance solutions:
+An interactive, end-to-end finance operations platform combining three production-feeling AI solutions for municipal and capital-markets finance teams:
 
-1. **AI Powered Financial Management and Budgeting** with forecasting, anomaly detection, and budget variance widgets.
-2. **Customer Service and Financial Monitoring** for Development Charges (DC) and Cash in Lieu (CIL) parkland payments, with a live chatbot, collections dashboard, discrepancy flags, and email triage.
+1. **Financial Forecasting** — variance tracking, anomaly detection, 6-month cash flow projection
+2. **DC/CIL Management** — Development Charges and Cash-in-Lieu accounts with AI-drafted reminders
+3. **Trade Reconciliation** — match capital-markets trades across two systems, investigate breaks with AI tool-use
 
-Built with Next.js (App Router), TypeScript, Tailwind CSS v4, Recharts, Framer Motion, Lucide icons, and the Anthropic SDK for the chatbot.
+Plus three integrated AI tools:
+
+- **MuniBot Chat** — streaming chat with live database access via 9 tools
+- **Email Triage** — AI inbox with auto-classification and response drafting
+- **Audit Log** — every action by humans or AI is logged and exportable
 
 ## Quick start
 
 ```bash
-git clone <this-repo>
-cd municipal-ai-finance
 npm install
-
-# Add your Anthropic API key to enable the live chatbot
-cp .env.local .env.local.example   # optional: keep the template around
-# Edit .env.local and replace the placeholder value
-#   ANTHROPIC_API_KEY=sk-ant-...
-
+echo "ANTHROPIC_API_KEY=sk-ant-..." > .env.local
 npm run dev
 ```
 
-The app runs at [http://localhost:3000](http://localhost:3000).
+Open [http://localhost:3000](http://localhost:3000). The SQLite database self-initializes and seeds on first request. No login, no password.
 
-## Environment variables
-
-| Name | Required | Description |
-|------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes (for chatbot) | Anthropic key used by the `/api/chat` route. The rest of the site renders without it; only the chatbot tab will surface an error message. |
-| `ANTHROPIC_MODEL`   | No | Override the default model. Defaults to `claude-sonnet-4-20250514`. |
-
-Get an Anthropic key at https://console.anthropic.com/settings/keys.
-
-## Pages and routes
-
-| Path | Purpose |
-|------|---------|
-| `/` | Landing page with hero, expandable solution cards, and contact CTA. |
-| `/solutions/financial-forecasting` | Solution 1 detail page. |
-| `/solutions/customer-service` | Solution 2 detail page. |
-| `/demo/forecasting-dashboard` | Working forecasting dashboard with mock municipal data. |
-| `/demo/chatbot` | DC and CIL operations console: dashboard, discrepancies, email triage, and live chatbot. |
-| `/api/chat` | POST endpoint that calls the Anthropic API. Body: `{ messages: [{ role, content }] }`. |
-
-## Project structure
+## Architecture
 
 ```
-municipal-ai-finance/
-  app/
-    layout.tsx
-    page.tsx
-    globals.css
-    solutions/
-      financial-forecasting/page.tsx
-      customer-service/page.tsx
-    demo/
-      forecasting-dashboard/page.tsx
-      chatbot/page.tsx
-    api/
-      chat/route.ts
-  components/
-    Nav.tsx
-    Footer.tsx
-    Hero.tsx
-    SolutionCard.tsx
-    BenefitsList.tsx
-    ForecastChart.tsx
-    AnomalyDetector.tsx
-    BudgetVariance.tsx
-    DCDashboard.tsx
-    DiscrepancyPanel.tsx
-    EmailTriage.tsx
-    ChatbotWidget.tsx
-    ui/
-      button.tsx
-      card.tsx
-      badge.tsx
-      input.tsx
-  lib/
-    mockData.ts
-    utils.ts
+app/
+  page.tsx                          Dashboard (KPIs, charts, anomalies, audit feed)
+  solutions/
+    financial-forecasting/          Cash flow, variance, anomaly drawer with Claude actions
+    dc-cil/                         TanStack table, by-law simulator, AI reminders
+    reconciliation/                 Two-pane diff, animated matching, AI investigation
+  tools/
+    chat/                           MuniBot streaming chat with tool use
+    email-triage/                   Inbox + Claude triage
+    audit/                          Filterable timeline, CSV export
+  settings/                         Theme, density, reset demo data
+  api/                              All Route Handlers (Next.js 16)
+components/
+  app/                              Sidebar, topbar, command palette, notifications
+  ui/                               Button, Card, Modal, Drawer, KPI card, Skeleton
+lib/
+  db.ts                             SQLite schema, seed (300 tx, 30 DC, 20 CIL, 80 trades, 10 breaks, 20 emails)
+  forecast.ts                       Linear regression + seasonal forecast, anomaly detector
+  anthropic.ts                      Claude client + system rules
+data/
+  app.db                            SQLite database (auto-created)
 ```
 
-## Solution 1: Financial Forecasting demo
+## 10-minute demo script
 
-Path: `/demo/forecasting-dashboard`
+1. **Dashboard (1 min)** — Open `/`. Note four KPIs, the actual+forecast area chart, the anomalies list, the recon donut, and the AI activity feed (it updates as you trigger actions in the rest of the demo).
 
-Three working widgets:
+2. **Financial Forecasting (2 min)** — `/solutions/financial-forecasting`.
+   - Change the department filter — chart updates.
+   - Click **Add transaction**, fill in a $50,000 entry, save. Forecast re-runs, audit log gains an entry.
+   - Click **Run anomaly scan** for the count-up animation.
+   - Click any anomaly card to open the side drawer. Click **Email** — Claude drafts a clarification email live.
 
-- **Forecast chart** (Recharts ComposedChart). Twelve months of historical actuals plus six months of projected spend with a 90% confidence band, against approved budget. Switch between Parks, Roads, Public Safety, Admin, or all departments.
-- **Anomaly detector**. Flagged transactions with severity badges, AI rationale, and status workflow (open, reviewing, cleared).
-- **Budget variance** widget. Department level actual versus forecast with percent variance pills.
+3. **DC/CIL Management (2 min)** — `/solutions/dc-cil`.
+   - Switch tabs (DC / CIL / Combined). Filter the table.
+   - Click any DC row. In the drawer, click **Generate reminder** — Claude drafts a payment reminder using the row's specific developer, balance, and by-law version. Edit it inline.
+   - Open the **By-law update simulator** in the header, set 5%, apply. All active accounts have their balances updated in the database.
 
-All data is mocked in `lib/mockData.ts` and is suitable for showing the experience without standing up an ERP integration.
+4. **Trade Reconciliation (2 min)** — `/solutions/reconciliation`.
+   - Click **Run reconciliation**. Trades stream in line-by-line, matched rows turn green, breaks stay red. KPI counters update live.
+   - Expand a break and click **Investigate with AI**. Claude calls `get_trade_details`, `get_counterparty_info`, `get_historical_breaks`, then drafts a team message — all streamed back. Each tool call shows as a pill.
+   - Hit **Mark resolved** — audit logged.
+   - Header has a **Month-end report** button that streams a polished report.
 
-## Solution 2: DC and CIL demo
+5. **MuniBot Chat (1.5 min)** — `/tools/chat`. Try one of the suggested prompts ("List all overdue DC accounts"). Watch the tool-use pills appear above the streaming response. Start a new conversation — it persists to SQLite.
 
-Path: `/demo/chatbot`
+6. **Email Triage (1 min)** — `/tools/email-triage`. Click any unread email, see its AI-detected priority and category, scan the suggested action and draft response. Click **Simulate new email** to inject a new one — it's auto-triaged. Or **Reclassify all** to run Claude over every email.
 
-- **DC dashboard**. KPI tiles for collected, outstanding, overdue, and collection rate; payment status donut; upcoming and overdue payments table.
-- **Discrepancy panel**. Flagged issues such as superseded fee schedules and unit count mismatches.
-- **Email triage**. Inbound developer and resident messages classified into urgent, normal, or low, with suggested action templates.
-- **Chatbot widget**. Live Anthropic powered assistant trained as a municipal DC and CIL specialist. Suggested prompts include:
-  - "When is my next DC payment due?"
-  - "How is parkland CIL calculated?"
-  - "What if I miss a payment?"
-  - "How do by law updates affect my development?"
+7. **Audit Log (30 sec)** — `/tools/audit`. Every action you took in the previous steps is here. Filter by entity, search, export CSV.
 
-## Screenshots
+8. **Command palette** — `⌘K` jumps anywhere and runs actions like "Run Reconciliation" or "Switch to Light Mode".
 
-Add screenshots to `docs/screenshots/` and reference them here. Placeholder slots:
+## What's real vs synthetic
 
-- [ ] Landing page hero with expandable solution cards
-- [ ] Forecasting dashboard, forecast chart and anomaly panel
-- [ ] DC dashboard with KPI tiles and donut
-- [ ] Chatbot live conversation
+| Element                          | Reality                                                      |
+| -------------------------------- | ------------------------------------------------------------ |
+| Database                         | Real SQLite (`data/app.db`)                                  |
+| Forecasting math                 | Real linear regression + seasonal adjustment                 |
+| Anomaly detection                | Real z-score, duplicate, and round-number heuristics         |
+| Reconciliation matching          | Real cross-system diff with break detection                  |
+| Claude API calls                 | Real, using your `ANTHROPIC_API_KEY` and `claude-sonnet-4-5` |
+| Tool use                         | Real Anthropic tool-use loop, server-executed against SQLite |
+| Audit log                        | Real, every mutation logged automatically                    |
+| Email sending                    | Simulated (status changes to 'sent' in DB)                   |
+| Payment processing               | Simulated                                                    |
+| Seed data                        | Synthetic but realistic                                      |
 
-## Design system
+## Tech stack
 
-- Color palette: deep navy (`#1a2942`), gold accent (`#c9a961`), warm slate, off white.
-- Typography: Inter for body and UI; Playfair Display for display headings.
-- Animations: subtle Framer Motion fade up on scroll, accordion expand on solution cards, chatbot bubble entrance.
-- Mobile: responsive grid through to single column. Sticky nav with hamburger.
-- Charts: Recharts with custom tooltips and a navy / gold palette consistent with the brand.
+- **Next.js 16** (App Router, Route Handlers, Turbopack)
+- **React 19**
+- **TypeScript** strict mode
+- **Tailwind CSS v4** with custom design tokens, dark mode default
+- **better-sqlite3** for the database
+- **@anthropic-ai/sdk** with `claude-sonnet-4-5`, streaming, and tool use
+- **Recharts** for charts
+- **@tanstack/react-table** for sortable filterable tables
+- **Framer Motion** for micro-interactions
+- **cmdk** for the ⌘K command palette
+- **sonner** for toasts
+- **react-markdown** for chat rendering
+- **lucide-react** for icons
+- **date-fns** for relative time
 
-## Scripts
+## Environment
 
 ```bash
-npm run dev      # Start the dev server on http://localhost:3000
-npm run build    # Production build
-npm run start    # Run the production build
-npm run lint     # ESLint
+ANTHROPIC_API_KEY=sk-ant-...           # Required
+ANTHROPIC_MODEL=claude-sonnet-4-5      # Optional override
 ```
 
-## License
+## Keyboard
 
-Confidential pitch material. Not for redistribution.
+| Shortcut          | Action                       |
+| ----------------- | ---------------------------- |
+| ⌘K / Ctrl+K       | Open command palette         |
+| Esc               | Close any drawer or modal    |
+| Enter             | Send chat message            |
+| Shift+Enter       | New line in chat input       |
+
+## Reset
+
+`Settings → Reset demo data` wipes the SQLite DB and re-seeds.

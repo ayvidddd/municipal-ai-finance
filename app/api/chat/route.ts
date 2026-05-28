@@ -1,90 +1,256 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { NextResponse } from "next/server";
+import { db, logAudit } from "@/lib/db";
+import { getClient, MODEL, NO_EM_DASH_RULE } from "@/lib/anthropic";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514";
+const SYSTEM_PROMPT = `You are MuniBot, an AI assistant for a municipal finance and capital markets operations team. You have live database access via tools across three domains:
 
-const SYSTEM_PROMPT = `You are the Municipal DC and CIL Assistant, a professional AI built into a municipal government finance platform.
+1. Financial Forecasting: budgets, transactions, anomalies, variance, departments.
+2. DC/CIL Management: Development Charges and Cash-in-Lieu accounts, balances, overdue, by-law rates.
+3. Trade Reconciliation: trades across two systems, breaks, SLA aging.
 
-Your role:
-- Help developers, residents, and municipal staff understand Development Charges (DCs) and Cash in Lieu (CIL) parkland payments.
-- Answer questions about payment schedules, calculation methodology, by law updates, deferral provisions, late penalties, and the developer obligations under a typical Ontario style municipal DC by law.
-- Provide consistent, plain language answers grounded in standard Ontario municipal practice. When jurisdictions vary, say so and recommend confirming with the local Finance department.
+Operating rules:
+- Always use tools when answering questions about specific accounts, balances, transactions, or breaks. Do not guess numbers.
+- Cite specific account IDs, trade IDs, and dollar figures from tool results.
+- Be concise and direct. Lead with the answer.
+- ${NO_EM_DASH_RULE}
+- If a question is outside these domains, say so briefly and offer to redirect.`;
 
-Knowledge baseline (for context only, not verbatim quotation):
-- Development Charges are collected at building permit issuance unless a deferral or installment agreement is in place.
-- Cash in Lieu of parkland is calculated under the local Planning Act parkland dedication framework, typically as a percentage of land value, with caps that have evolved under recent provincial legislation.
-- Recent by law updates can change fee schedules; effective dates and transition rules determine which rate applies to a specific application.
-- Missed payments accrue interest under the by law and may trigger formal collection steps. The municipality typically issues notices before escalating.
+const TOOLS: Anthropic.Tool[] = [
+  {
+    name: "lookup_dc_account",
+    description: "Look up a Development Charges account by id or project name keyword",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "number" }, query: { type: "string" } },
+    },
+  },
+  {
+    name: "lookup_cil_account",
+    description: "Look up a Cash-in-Lieu account by id or project keyword",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "number" }, query: { type: "string" } },
+    },
+  },
+  {
+    name: "get_payment_status",
+    description: "Get payment status summary for DC by status keyword",
+    input_schema: {
+      type: "object",
+      properties: { status: { type: "string", description: "current, overdue, disputed, paid" } },
+      required: ["status"],
+    },
+  },
+  {
+    name: "calculate_dc_payment",
+    description: "Calculate DC payment for a hypothetical project",
+    input_schema: {
+      type: "object",
+      properties: {
+        units: { type: "number" },
+        unit_type: { type: "string" },
+      },
+      required: ["units", "unit_type"],
+    },
+  },
+  {
+    name: "check_overdue_accounts",
+    description: "List overdue DC accounts",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "get_bylaw_rates",
+    description: "Get current by-law rate schedule",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "search_transactions",
+    description: "Search transactions by vendor, category, or department",
+    input_schema: {
+      type: "object",
+      properties: {
+        vendor: { type: "string" },
+        category: { type: "string" },
+        department: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "get_reconciliation_breaks",
+    description: "List current open reconciliation breaks, optionally filtered by type",
+    input_schema: {
+      type: "object",
+      properties: { break_type: { type: "string" } },
+    },
+  },
+  {
+    name: "get_anomalies",
+    description: "List flagged transaction anomalies",
+    input_schema: { type: "object", properties: { limit: { type: "number" } } },
+  },
+];
 
-Style:
-- Concise, clear, and respectful. Avoid jargon when possible and define any terms you must use.
-- Never invent specific dollar figures, by law numbers, or deadlines for a real municipality. If asked for a specific amount or date, explain that the assistant can pull it from the developer account record once connected, and offer to walk through the calculation method instead.
-- Do not use em dashes. Use commas, parentheses, or short sentences.
-- Offer to route the question to a human staff member when the inquiry needs case specific authority.
-
-If a question is outside your scope (general legal advice, tax advice, planning approval merits), say so and suggest the appropriate municipal contact.`;
-
-interface IncomingMessage {
-  role: "user" | "assistant";
-  content: string;
+function runTool(name: string, input: Record<string, string | number>) {
+  if (name === "lookup_dc_account") {
+    if (input.id) {
+      return db.prepare(`SELECT * FROM dc_accounts WHERE id = ?`).get(input.id) ?? { error: "Not found" };
+    }
+    if (input.query) {
+      return db
+        .prepare(`SELECT * FROM dc_accounts WHERE project_name LIKE ? OR developer LIKE ? LIMIT 5`)
+        .all(`%${input.query}%`, `%${input.query}%`);
+    }
+    return { error: "Provide id or query" };
+  }
+  if (name === "lookup_cil_account") {
+    if (input.id) return db.prepare(`SELECT * FROM cil_accounts WHERE id = ?`).get(input.id) ?? { error: "Not found" };
+    if (input.query)
+      return db.prepare(`SELECT * FROM cil_accounts WHERE project_name LIKE ? LIMIT 5`).all(`%${input.query}%`);
+    return { error: "Provide id or query" };
+  }
+  if (name === "get_payment_status") {
+    return db
+      .prepare(`SELECT id, developer, project_name, balance, due_date FROM dc_accounts WHERE status = ? LIMIT 10`)
+      .all(input.status);
+  }
+  if (name === "calculate_dc_payment") {
+    const rates: Record<string, number> = {
+      "Single Family": 38500,
+      Townhouse: 28900,
+      "Mid-Rise": 22100,
+      "High-Rise": 22100,
+      "Mixed Use": 24000,
+    };
+    const rate = rates[input.unit_type as string] ?? 25000;
+    return {
+      units: input.units,
+      unit_type: input.unit_type,
+      rate_per_unit: rate,
+      total: Number(input.units) * rate,
+      by_law: "2024-02",
+    };
+  }
+  if (name === "check_overdue_accounts") {
+    return db
+      .prepare(`SELECT id, developer, project_name, balance, due_date FROM dc_accounts WHERE status = 'overdue'`)
+      .all();
+  }
+  if (name === "get_bylaw_rates") {
+    return {
+      "2024-02": { "Single Family": 38500, Townhouse: 28900, "Mid-Rise": 22100, "High-Rise": 22100 },
+      cil_rate_range: { min_per_sqm: 220, max_per_sqm: 480 },
+    };
+  }
+  if (name === "search_transactions") {
+    const where: string[] = [];
+    const params: string[] = [];
+    if (input.vendor) {
+      where.push("vendor LIKE ?");
+      params.push(`%${input.vendor}%`);
+    }
+    if (input.category) {
+      where.push("category = ?");
+      params.push(String(input.category));
+    }
+    if (input.department) {
+      where.push("department = ?");
+      params.push(String(input.department));
+    }
+    const q = `SELECT id, date, department, category, vendor, amount FROM transactions ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY date DESC LIMIT 15`;
+    return db.prepare(q).all(...params);
+  }
+  if (name === "get_reconciliation_breaks") {
+    if (input.break_type) {
+      return db
+        .prepare(`SELECT * FROM breaks WHERE resolved = 0 AND break_type = ? ORDER BY sla_deadline LIMIT 20`)
+        .all(input.break_type);
+    }
+    return db.prepare(`SELECT * FROM breaks WHERE resolved = 0 ORDER BY sla_deadline LIMIT 20`).all();
+  }
+  if (name === "get_anomalies") {
+    const lim = Number(input.limit) || 10;
+    return db
+      .prepare(`SELECT id, date, vendor, amount, anomaly_reasons FROM transactions WHERE flagged = 1 ORDER BY anomaly_score DESC LIMIT ?`)
+      .all(lim);
+  }
+  return { error: "Unknown tool" };
 }
 
-export async function POST(request: Request) {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return NextResponse.json(
-      {
-        error:
-          "ANTHROPIC_API_KEY is not set on the server. Add it to .env.local to enable live chat.",
-      },
-      { status: 500 }
-    );
-  }
+export async function POST(req: Request) {
+  const { sessionId, messages: clientMessages } = (await req.json()) as {
+    sessionId?: number;
+    messages: Array<{ role: "user" | "assistant"; content: string }>;
+  };
 
-  let body: { messages?: IncomingMessage[] };
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
-  }
+  const client = getClient();
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (obj: object) => controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n"));
+      const messages: Anthropic.MessageParam[] = clientMessages.map((m) => ({ role: m.role, content: m.content }));
+      let finalAssistantText = "";
 
-  const incoming = Array.isArray(body.messages) ? body.messages : [];
-  const conversation = incoming
-    .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
-    .slice(-20);
+      try {
+        for (let iter = 0; iter < 6; iter++) {
+          const resp = client.messages.stream({
+            model: MODEL,
+            max_tokens: 1500,
+            system: SYSTEM_PROMPT,
+            tools: TOOLS,
+            messages,
+          });
 
-  if (conversation.length === 0 || conversation[conversation.length - 1].role !== "user") {
-    return NextResponse.json(
-      { error: "Conversation must end with a user message." },
-      { status: 400 }
-    );
-  }
+          let iterText = "";
 
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+          for await (const event of resp) {
+            if (event.type === "content_block_start" && event.content_block.type === "tool_use") {
+              send({ type: "tool_start", name: event.content_block.name });
+            }
+            if (event.type === "content_block_delta") {
+              if (event.delta.type === "text_delta") {
+                iterText += event.delta.text;
+                send({ type: "text_delta", delta: event.delta.text });
+              }
+            }
+          }
+          const finalMsg = await resp.finalMessage();
+          finalAssistantText += iterText;
+          const toolUses = finalMsg.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
+          messages.push({ role: "assistant", content: finalMsg.content });
 
-  try {
-    const response = await client.messages.create({
-      model: MODEL,
-      max_tokens: 700,
-      system: SYSTEM_PROMPT,
-      messages: conversation.map((m) => ({ role: m.role, content: m.content })),
-    });
+          if (finalMsg.stop_reason === "end_turn" || toolUses.length === 0) break;
 
-    const text = response.content
-      .filter((block): block is Anthropic.TextBlock => block.type === "text")
-      .map((block) => block.text)
-      .join("\n")
-      .trim();
+          const toolResults: Anthropic.ToolResultBlockParam[] = toolUses.map((tu) => {
+            const r = runTool(tu.name, tu.input as Record<string, string | number>);
+            send({ type: "tool_result", name: tu.name, result: r });
+            return { type: "tool_result", tool_use_id: tu.id, content: JSON.stringify(r) };
+          });
+          messages.push({ role: "user", content: toolResults });
+        }
 
-    return NextResponse.json({
-      reply: text || "I was not able to generate a reply.",
-      model: response.model,
-      usage: response.usage,
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Anthropic request failed.";
-    return NextResponse.json({ error: message }, { status: 502 });
-  }
+        if (sessionId) {
+          const row = db.prepare(`SELECT messages_json FROM chat_sessions WHERE id = ?`).get(sessionId) as
+            | { messages_json: string }
+            | undefined;
+          const existing = row ? JSON.parse(row.messages_json) : [];
+          existing.push(clientMessages[clientMessages.length - 1]);
+          existing.push({ role: "assistant", content: finalAssistantText });
+          db.prepare(
+            `UPDATE chat_sessions SET messages_json = ?, last_message_at = CURRENT_TIMESTAMP WHERE id = ?`
+          ).run(JSON.stringify(existing), sessionId);
+          logAudit("ai", "chat_message", "chat_session", sessionId);
+        }
+
+        send({ type: "done" });
+        controller.close();
+      } catch (err) {
+        send({ type: "error", error: (err as Error).message });
+        controller.close();
+      }
+    },
+  });
+  return new Response(stream, { headers: { "Content-Type": "application/x-ndjson" } });
 }
